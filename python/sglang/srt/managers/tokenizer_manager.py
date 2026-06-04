@@ -678,6 +678,171 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                     "the engine with skip_tokenizer_init=False."
                 )
 
+            # print(f"input_text=\n{input_text}\n")
+            input_ids, token_type_ids = await self._tokenize_texts(
+                input_text, is_cross_encoder_request
+            )
+            if obj.fusionrag_params is not None:
+                if "prompt_list" in obj.fusionrag_params:
+                    prompt_list = obj.fusionrag_params["prompt_list"]
+                    prompt_ids_list = []
+                    for prompt in prompt_list:
+                        prompt_id, _ = await self._tokenize_texts(
+                            prompt, is_cross_encoder_request
+                        )
+                        prompt_ids_list.append(prompt_id)
+                    obj.fusionrag_params["prompt_ids_list"] = prompt_ids_list
+                    ## 重新赋值input_ids
+                    input_ids = [num for sublist in prompt_ids_list for num in sublist]
+                    ## draft model,
+                    obj.fusionrag_params["draft_length"] = [num for sublist in prompt_ids_list[:-1] for num in sublist]
+                else:
+                    print(f"mengyao_debug prompt_list should be in params.")
+
+                if "prefix_prompt_list" in obj.fusionrag_params:
+                    prefix_prompt_list = obj.fusionrag_params["prefix_prompt_list"]
+                    prefix_prompt_ids_list = []
+                    for prefix_prompt in prefix_prompt_list:
+                        prefix_prompt_id, _ = await self._tokenize_texts(
+                            prefix_prompt, is_cross_encoder_request
+                        )
+                        prefix_prompt_ids_list.append(prefix_prompt_id)
+                    obj.fusionrag_params["prefix_prompt_ids_list"] = prefix_prompt_ids_list
+                    prefix_prompt_ids = [num for sublist in prefix_prompt_ids_list for num in sublist]
+                    obj.fusionrag_params["prefix_prompt_ids"] = prefix_prompt_ids
+                else:
+                    print(f"mengyao_debug prefix_prompt_list should be in params.")
+
+                prefix_prompt_ = obj.fusionrag_params["prefix_prompt"]
+                prompt_ = input_text
+                if not prompt_.startswith(prefix_prompt_) and prefix_prompt_ in prompt_:
+                    if "prefix_cache_prompt" in obj.fusionrag_params:
+                        prefix_cache_prompt = obj.fusionrag_params["prefix_cache_prompt"]
+                    else:
+                        ## 找到最后一个
+                        prefix_cache_prompt = prompt_[:prompt_.rfind(prefix_prompt_)]
+
+                    prefix_cache_ids, _ = await self._tokenize_texts(
+                        prefix_cache_prompt, is_cross_encoder_request
+                    )
+                    obj.fusionrag_params["prefix_cache_ids"] = prefix_cache_ids
+                else:
+                    obj.fusionrag_params["prefix_cache_ids"] = []
+                prefix_cache_ids_len = len(obj.fusionrag_params["prefix_cache_ids"])
+
+                if "recompute_tokens" in obj.fusionrag_params:
+                    recompute_idx = await self._find_recompute_token_in_one_request(
+                        recompute_str_list=obj.fusionrag_params["recompute_tokens"],
+                        is_cross_encoder_request=is_cross_encoder_request
+                    )
+                    obj.fusionrag_params["recompute_idx"] = recompute_idx
+
+                ##mengyao_debug hardcode
+                elif obj.fusionrag_params.get("recompute_debug", False) == True:
+                    import random
+                    recompute_rate = obj.fusionrag_params.get("recompute_debug_rate", 0.3)
+                    print(f"recompute_debug_rate = {recompute_rate}")
+                    length = len(input_ids) - 1
+                    if length > 0:
+                        recompute_length = int(len(input_ids) * recompute_rate)
+                        numbers = random.sample(range(length), recompute_length)
+                        numbers.sort()
+                        ## if this is a debug, only recompute idx in fusionrag chunks
+                        numbers = [x for x in numbers if x >= prefix_cache_ids_len]
+                        obj.fusionrag_params["recompute_idx"] = numbers
+                    else:
+                        obj.fusionrag_params["recompute_idx"] = [0]
+                    print(f"mengyao_debug recompute_idx = {obj.fusionrag_params['recompute_idx']}")
+            # For audio-only requests (e.g., Whisper), text may be empty.
+            # The multimodal processor will provide input_ids later.
+            if not input_text and self.mm_processor and obj.contains_mm_input():
+                # Use empty placeholder - multimodal processor will override
+                input_ids = []
+            else:
+                input_ids, token_type_ids = await self._tokenize_texts(
+                    input_text, is_cross_encoder_request
+                )
+
+        if self.mm_processor and obj.contains_mm_input():
+            if obj.image_data is not None and not isinstance(obj.image_data, list):
+                obj.image_data = [obj.image_data]
+            if obj.video_data is not None and not isinstance(obj.video_data, list):
+                obj.video_data = [obj.video_data]
+            if obj.audio_data is not None and not isinstance(obj.audio_data, list):
+                obj.audio_data = [obj.audio_data]
+            self._validate_mm_limits(obj)
+
+            mm_inputs = None
+
+            if (
+                not self.server_args.language_only
+                or self.server_args.encoder_transfer_backend
+                in ["zmq_to_tokenizer", "mooncake"]
+            ):
+                if self.server_args.language_only:
+                    mm_inputs = await self.mm_receiver.recv_mm_data(
+                        img_data=obj.image_data,
+                        mm_processor=self.mm_processor,
+                        prompt=(input_text or input_ids),
+                    )
+                if mm_inputs is None:
+                    mm_inputs: Dict = await self.mm_data_processor.process(
+                        image_data=obj.image_data,
+                        audio_data=obj.audio_data,
+                        input_text_or_ids=(input_text or input_ids),
+                        request_obj=obj,
+                        max_req_input_len=self.max_req_input_len,
+                    )
+
+            if mm_inputs and "input_ids" in mm_inputs:
+                input_ids = mm_inputs["input_ids"]
+            if (
+                envs.SGLANG_MM_PRECOMPUTE_HASH.get()
+                and mm_inputs
+                and "mm_items" in mm_inputs
+            ):
+                for item in mm_inputs["mm_items"]:
+                    if isinstance(item, MultimodalDataItem):
+                        item.set_pad_value()
+        else:
+            mm_inputs = None
+
+        self._validate_one_request(obj, input_ids)
+        return self._create_tokenized_object(
+            obj, input_text, input_ids, input_embeds, mm_inputs, token_type_ids
+        )
+
+    async def _tokenize_one_request_back(
+        self,
+        obj: Union[GenerateReqInput, EmbeddingReqInput],
+    ):
+        """Tokenize one request."""
+        # Tokenize
+        input_embeds = None
+        input_text = obj.text
+        token_type_ids = None
+        is_cross_encoder_request = (
+            isinstance(obj, EmbeddingReqInput) and obj.is_cross_encoder_request
+        )
+        if obj.input_embeds is not None:
+            if not self.server_args.disable_radix_cache:
+                raise ValueError(
+                    "input_embeds is provided while disable_radix_cache is False. "
+                    "Please add `--disable-radix-cache` when you launch the server "
+                    "if you want to use input_embeds as inputs."
+                )
+            input_embeds = obj.input_embeds
+            input_ids = obj.input_ids
+        elif obj.input_ids is not None:
+            input_ids = obj.input_ids
+        else:
+            if self.tokenizer is None:
+                raise ValueError(
+                    "The engine initialized with skip_tokenizer_init=True cannot "
+                    "accept text prompts. Please provide input_ids or re-initialize "
+                    "the engine with skip_tokenizer_init=False."
+                )
+
             # For audio-only requests (e.g., Whisper), text may be empty.
             # The multimodal processor will provide input_ids later.
             if not input_text and self.mm_processor and obj.contains_mm_input():
@@ -1521,6 +1686,9 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                     meta_info[k] = v[i]
             if getattr(recv_obj, "dp_ranks", None):
                 meta_info["dp_rank"] = recv_obj.dp_ranks[i]
+
+            if getattr(recv_obj, "draft_attention_weights", None):
+                meta_info["draft_attention_weights"] = recv_obj.draft_attention_weights[i]
 
             if isinstance(recv_obj, BatchStrOutput):
                 state.text += recv_obj.output_strs[i]

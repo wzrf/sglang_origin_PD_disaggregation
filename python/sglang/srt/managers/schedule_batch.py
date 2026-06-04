@@ -518,6 +518,7 @@ class Req(ReqDllmMixin):
         routing_key: Optional[str] = None,
         dimensions: Optional[int] = None,
         http_worker_ipc: Optional[str] = None,
+        fusionrag_params: Optional[Dict] = None,
         time_stats: Optional[
             Union[APIServerReqTimeStats, DPControllerReqTimeStats]
         ] = None,
@@ -563,6 +564,11 @@ class Req(ReqDllmMixin):
 
         # Require reasoning for the request (hybrid reasoning model only)
         self.require_reasoning = require_reasoning
+        self.draft_attn_weights = []
+        self.attn_weights = torch.tensor(0)
+        self.draft_length = 4
+        if fusionrag_params is not None:
+            self.draft_length = fusionrag_params.get("draft_length", 0)
 
         # Sampling info
         if isinstance(sampling_params.custom_params, dict):

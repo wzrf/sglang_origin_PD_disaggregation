@@ -402,6 +402,7 @@ class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
             load=recv_obj.load,
             dp_ranks=recv_obj.dp_ranks,
             time_stats=recv_obj.time_stats,
+            draft_attention_weights=recv_obj.draft_attention_weights,
         )
 
     def handle_multimodal_decode_req(self, recv_obj: BatchMultimodalDecodeReq):

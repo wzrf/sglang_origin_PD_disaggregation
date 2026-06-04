@@ -906,6 +906,7 @@ class SchedulerOutputProcessorMixin:
         load = self.get_load()
         routed_experts = None
         customized_info = {}
+        draft_attention_weights = []
 
         time_stats = []
 
@@ -1103,6 +1104,12 @@ class SchedulerOutputProcessorMixin:
                             customized_info[k] = []
                         customized_info[k].append(v[send_token_offset:])
 
+                try:
+                    attn_weights_ = req.attn_weights.tolist()
+                except Exception as e:
+                    attn_weights_ = []
+                draft_attention_weights.append(attn_weights_)
+
             if (
                 req.finished()
                 and self.attn_tp_rank == 0
@@ -1157,6 +1164,7 @@ class SchedulerOutputProcessorMixin:
                     retraction_counts=retraction_counts,
                     load=load,
                     dp_ranks=dp_ranks,
+                    draft_attention_weights=draft_attention_weights
                 )
             )
 

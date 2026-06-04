@@ -317,6 +317,7 @@ class CompletionRequest(BaseModel):
 
     # For custom metric labels
     custom_labels: Optional[Dict[str, str]] = None
+    fusionrag_params: Optional[Dict] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -355,6 +356,7 @@ class CompletionResponseChoice(BaseModel):
     finish_reason: Optional[Literal["stop", "length", "content_filter", "abort"]] = None
     matched_stop: Union[None, int, str] = None
     hidden_states: Optional[object] = None
+    attention_weights: Optional[list[float]] = None
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler):

@@ -121,6 +121,7 @@ class OpenAIServingCompletion(OpenAIServingBase):
             routing_key=self.extract_routing_key(raw_request),
             custom_labels=custom_labels,
             custom_logit_processor=request.custom_logit_processor,
+            fusionrag_params=request.fusionrag_params,
         )
 
         return adapted_request, request
@@ -466,6 +467,7 @@ class OpenAIServingCompletion(OpenAIServingBase):
                     else None
                 ),
                 hidden_states=hidden_states,
+                attention_weights=ret_item["meta_info"].get("draft_attention_weights", []),
             )
             choices.append(choice_data)
 

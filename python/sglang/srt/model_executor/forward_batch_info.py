@@ -372,6 +372,7 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
 
     # For hidden states before normal
     return_hidden_states_before_norm: bool = False
+    reqs: Optional[list] = None
 
     # For dumper: request IDs for cross-step sequence tracking
     rids: Optional[List[str]] = None
@@ -420,6 +421,7 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
             tbo_split_seq_index=batch.tbo_split_seq_index,
             dimensions=batch.dimensions,
             return_hidden_states_before_norm=batch.return_hidden_states_before_norm,
+            reqs = batch.reqs,
             rids=[req.rid for req in batch.reqs],
         )
         device = model_runner.device

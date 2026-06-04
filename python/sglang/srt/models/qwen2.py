@@ -15,10 +15,15 @@
 # Adapted from llama2.py
 # Modify details for the adaptation of Qwen2 model.
 """Inference-only Qwen2 model compatible with HuggingFace weights."""
-
+import copy
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
-
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Optional, Tuple
+import torch
+import numpy as np
 import torch
 from torch import nn
 
@@ -45,7 +50,7 @@ from sglang.srt.layers.vocab_parallel_embedding import (
     ParallelLMHead,
     VocabParallelEmbedding,
 )
-from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors, ForwardMode
 from sglang.srt.model_loader.weight_utils import (
     default_weight_loader,
     kv_cache_scales_loader,
@@ -176,6 +181,48 @@ class Qwen2Attention(nn.Module):
             prefix=add_prefix("attn", prefix),
         )
 
+    def torch_attn(
+        self,
+        q: torch.Tensor,  # [seq_len, q_size]
+        k: torch.Tensor,  # [kv_seq_len, kv_size]
+        v: torch.Tensor,  # [kv_seq_len, kv_size]
+    ) -> (torch.Tensor, torch.Tensor):
+
+        seq_len, _ = q.shape
+        kv_seq_len = k.size(0)
+
+        # 1. 重塑为多头格式并转置: [seq_len, heads, head_dim] -> [heads, seq_len, head_dim]
+        # 注意: k 和 v 的头数必须使用 self.num_kv_heads
+        q = q.view(seq_len, self.num_heads, self.head_dim).transpose(0, 1)
+        k = k.view(kv_seq_len, self.num_kv_heads, self.head_dim).transpose(0, 1)
+        v = v.view(kv_seq_len, self.num_kv_heads, self.head_dim).transpose(0, 1)
+
+        # 2. 处理 GQA (Grouped Query Attention) 广播
+        # 如果 Q 的头数大于 KV 的头数，需要把 K 和 V 的头数复制扩展，以便执行 matmul
+        num_heads_per_kv = self.num_heads // self.num_kv_heads
+        if num_heads_per_kv > 1:
+            k = torch.repeat_interleave(k, repeats=num_heads_per_kv, dim=0)
+            v = torch.repeat_interleave(v, repeats=num_heads_per_kv, dim=0)
+
+        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scaling
+
+        if seq_len > 1:
+            causal_mask = torch.triu(
+                torch.ones(seq_len, kv_seq_len, dtype=torch.bool, device=q.device),
+                diagonal=1
+            )
+            scores = scores.masked_fill(causal_mask, float('-inf'))
+
+        # 5. Softmax + Dropout
+        attn_weights = F.softmax(scores, dim=-1, dtype=torch.float32).to(v.dtype)
+
+        attn_output = torch.matmul(attn_weights, v)
+
+        attn_output = attn_output.transpose(0, 1).contiguous().view(seq_len, -1)
+
+        return attn_output, attn_weights
+
+
     def forward(
         self,
         positions: torch.Tensor,
@@ -185,7 +232,17 @@ class Qwen2Attention(nn.Module):
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = self.rotary_emb(positions, q, k)
-        attn_output = self.attn(q, k, v, forward_batch)
+
+        if forward_batch.forward_mode == ForwardMode.EXTEND:
+            forward_batch.token_to_kv_pool.set_kv_buffer(
+                self.attn, forward_batch.out_cache_loc, k, v
+            )
+            attn_output, attn_weight = self.torch_attn(q, k, v)
+            attn_weight = torch.mean(attn_weight, dim=0)
+            forward_batch.reqs[0].draft_attn_weights.append(attn_weight)
+        else:
+            attn_output = self.attn(q, k, v, forward_batch)
+
         output, _ = self.o_proj(attn_output)
         return output
 
@@ -486,6 +543,13 @@ class Qwen2ForCausalLM(nn.Module):
             input_embeds,
             pp_proxy_tensors=pp_proxy_tensors,
         )
+        if forward_batch.forward_mode == ForwardMode.EXTEND:
+            for req in forward_batch.reqs:
+                attn_weights = torch.stack(req.draft_attn_weights, dim=0).mean(dim=0)
+                attn_weights = attn_weights[req.draft_length:, : req.draft_length]
+                attn_weights_avg = attn_weights.mean(dim=0)
+                req.attn_weights = attn_weights_avg
+
         aux_hidden_states = None
         if self.capture_aux_hidden_states:
             hidden_states, aux_hidden_states = hidden_states
