@@ -695,7 +695,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                     ## 重新赋值input_ids
                     input_ids = [num for sublist in prompt_ids_list for num in sublist]
                     ## draft model,
-                    obj.fusionrag_params["draft_length"] = [num for sublist in prompt_ids_list[:-1] for num in sublist]
+                    obj.fusionrag_params["draft_length"] = len([num for sublist in prompt_ids_list[:-1] for num in sublist])
                 else:
                     print(f"mengyao_debug prompt_list should be in params.")
 
@@ -1101,6 +1101,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                 routing_key=obj.routing_key,
                 need_wait_for_image=obj.need_wait_for_image,
                 num_items_assigned=obj.num_items_assigned,
+                fusionrag_params=obj.fusionrag_params,
             )
         elif isinstance(obj, EmbeddingReqInput):
             tokenized_obj = TokenizedEmbeddingReqInput(
