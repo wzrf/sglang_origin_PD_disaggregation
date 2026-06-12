@@ -119,6 +119,7 @@ class Qwen2Attention(nn.Module):
         quant_config: Optional[QuantizationConfig] = None,
         dual_chunk_attention_config: Optional[dict[str, Any]] = None,
         prefix: str = "",
+        layer_num: int = 0,
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
@@ -145,6 +146,7 @@ class Qwen2Attention(nn.Module):
         self.scaling = self.head_dim**-0.5
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
+        self.layer_num = layer_num
 
         self.qkv_proj = QKVParallelLinear(
             hidden_size,
@@ -239,7 +241,8 @@ class Qwen2Attention(nn.Module):
             )
             attn_output, attn_weight = self.torch_attn(q, k, v)
             attn_weight = torch.mean(attn_weight, dim=0)
-            forward_batch.reqs[0].draft_attn_weights.append(attn_weight)
+            if self.attn.layer_id >= self.layer_num / 2:
+                forward_batch.reqs[0].draft_attn_weights.append(attn_weight)
         else:
             attn_output = self.attn(q, k, v, forward_batch)
 
@@ -277,6 +280,7 @@ class Qwen2DecoderLayer(nn.Module):
             quant_config=quant_config,
             dual_chunk_attention_config=dual_chunk_attention_config,
             prefix=add_prefix("self_attn", prefix),
+            layer_num=config.num_hidden_layers
         )
         self.mlp = Qwen2MLP(
             hidden_size=self.hidden_size,

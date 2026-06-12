@@ -565,7 +565,7 @@ class Req(ReqDllmMixin):
         # Require reasoning for the request (hybrid reasoning model only)
         self.require_reasoning = require_reasoning
         self.draft_attn_weights = []
-        self.attn_weights = torch.tensor(0)
+        self.attn_weights = torch.tensor([0])
         self.draft_length = 4
         if fusionrag_params is not None:
             self.draft_length = fusionrag_params.get("draft_length", 0)

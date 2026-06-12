@@ -730,29 +730,29 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                     obj.fusionrag_params["prefix_cache_ids"] = []
                 prefix_cache_ids_len = len(obj.fusionrag_params["prefix_cache_ids"])
 
-                if "recompute_tokens" in obj.fusionrag_params:
-                    recompute_idx = await self._find_recompute_token_in_one_request(
-                        recompute_str_list=obj.fusionrag_params["recompute_tokens"],
-                        is_cross_encoder_request=is_cross_encoder_request
-                    )
-                    obj.fusionrag_params["recompute_idx"] = recompute_idx
-
-                ##mengyao_debug hardcode
-                elif obj.fusionrag_params.get("recompute_debug", False) == True:
-                    import random
-                    recompute_rate = obj.fusionrag_params.get("recompute_debug_rate", 0.3)
-                    print(f"recompute_debug_rate = {recompute_rate}")
-                    length = len(input_ids) - 1
-                    if length > 0:
-                        recompute_length = int(len(input_ids) * recompute_rate)
-                        numbers = random.sample(range(length), recompute_length)
-                        numbers.sort()
-                        ## if this is a debug, only recompute idx in fusionrag chunks
-                        numbers = [x for x in numbers if x >= prefix_cache_ids_len]
-                        obj.fusionrag_params["recompute_idx"] = numbers
-                    else:
-                        obj.fusionrag_params["recompute_idx"] = [0]
-                    print(f"mengyao_debug recompute_idx = {obj.fusionrag_params['recompute_idx']}")
+                # if "recompute_tokens" in obj.fusionrag_params:
+                #     recompute_idx = await self._find_recompute_token_in_one_request(
+                #         recompute_str_list=obj.fusionrag_params["recompute_tokens"],
+                #         is_cross_encoder_request=is_cross_encoder_request
+                #     )
+                #     obj.fusionrag_params["recompute_idx"] = recompute_idx
+                #
+                # ##mengyao_debug hardcode
+                # elif obj.fusionrag_params.get("recompute_debug", False) == True:
+                #     import random
+                #     recompute_rate = obj.fusionrag_params.get("recompute_debug_rate", 0.3)
+                #     print(f"recompute_debug_rate = {recompute_rate}")
+                #     length = len(input_ids) - 1
+                #     if length > 0:
+                #         recompute_length = int(len(input_ids) * recompute_rate)
+                #         numbers = random.sample(range(length), recompute_length)
+                #         numbers.sort()
+                #         ## if this is a debug, only recompute idx in fusionrag chunks
+                #         numbers = [x for x in numbers if x >= prefix_cache_ids_len]
+                #         obj.fusionrag_params["recompute_idx"] = numbers
+                #     else:
+                #         obj.fusionrag_params["recompute_idx"] = [0]
+                #     print(f"mengyao_debug recompute_idx = {obj.fusionrag_params['recompute_idx']}")
             # For audio-only requests (e.g., Whisper), text may be empty.
             # The multimodal processor will provide input_ids later.
             if not input_text and self.mm_processor and obj.contains_mm_input():
