@@ -16,7 +16,7 @@
 # Modify details for the adaptation of Qwen2 model.
 """Inference-only Qwen2 model compatible with HuggingFace weights."""
 import copy
-import logging
+import logging, time
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
@@ -24,7 +24,7 @@ import torch.nn.functional as F
 from typing import Optional, Tuple
 import torch
 import numpy as np
-import torch
+import torch, gc
 from torch import nn
 
 from sglang.srt.distributed import (
@@ -216,7 +216,9 @@ class Qwen2Attention(nn.Module):
             scores = scores.masked_fill(causal_mask, float('-inf'))
 
         # 5. Softmax + Dropout
-        attn_weights = F.softmax(scores, dim=-1, dtype=torch.float32).to(v.dtype)
+        attn_weights = F.softmax(scores, dim=-1, dtype=scores.dtype).to(v.dtype)
+
+        del scores
 
         attn_output = torch.matmul(attn_weights, v)
 
@@ -240,9 +242,11 @@ class Qwen2Attention(nn.Module):
                 self.attn, forward_batch.out_cache_loc, k, v
             )
             attn_output, attn_weight = self.torch_attn(q, k, v)
+            torch.cuda.empty_cache()
             attn_weight = torch.mean(attn_weight, dim=0)
             if self.attn.layer_id >= self.layer_num / 2:
-                forward_batch.reqs[0].draft_attn_weights.append(attn_weight)
+                detached_weight = attn_weight.detach()
+                forward_batch.reqs[0].draft_attn_weights.append(detached_weight)
         else:
             attn_output = self.attn(q, k, v, forward_batch)
 
@@ -540,6 +544,7 @@ class Qwen2ForCausalLM(nn.Module):
         get_embedding: bool = False,
         pp_proxy_tensors: Optional[PPProxyTensors] = None,
     ) -> torch.Tensor:
+        time_start = time.time()
         hidden_states = self.model(
             input_ids,
             positions,
@@ -548,11 +553,21 @@ class Qwen2ForCausalLM(nn.Module):
             pp_proxy_tensors=pp_proxy_tensors,
         )
         if forward_batch.forward_mode == ForwardMode.EXTEND:
+            print(f"model forward time: {time.time() - time_start}")
             for req in forward_batch.reqs:
                 attn_weights = torch.stack(req.draft_attn_weights, dim=0).mean(dim=0)
+                for idx in range(len(req.draft_attn_weights)):
+                    req.draft_attn_weights[idx] = None
+                    # 2. 原地清空列表
+                req.draft_attn_weights.clear()
                 attn_weights = attn_weights[req.draft_length:, : req.draft_length]
                 attn_weights_avg = attn_weights.mean(dim=0)
-                req.attn_weights = attn_weights_avg
+                attn_weights_avg_cpu = attn_weights_avg.detach().cpu()
+                del attn_weights
+                del attn_weights_avg
+                req.attn_weights = attn_weights_avg_cpu
+
+        torch.cuda.empty_cache()
 
         aux_hidden_states = None
         if self.capture_aux_hidden_states:
